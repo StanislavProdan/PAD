@@ -32,8 +32,9 @@ def run() -> None:
         print("4. Eroare procesare        (NACK + retry + DLQ)")
         print("5. Trei mesaje             (ordering FIFO)")
         print("6. Stare broker            (pending/in-flight/DLQ)")
+        print("7. Istoric evenimente      (tot ce s-a intamplat)")
         print("0. Iesire")
-        choice = input("Alege un scenariu [0-6]: ")
+        choice = input("Alege un scenariu [0-7]: ")
 
         if choice == "0":
             return
@@ -112,8 +113,15 @@ def run() -> None:
             print(f"In asteptare: {broker.pending_count}")
             print(f"In procesare: {broker.in_flight_count}")
             print(f"DLQ: {len(broker.dead_letters)}")
+        elif choice == "7":
+            header("Istoric evenimente", "observabilitate locala", "afiseaza toate evenimentele din sesiune")
+            if not broker.events:
+                print("Nu exista evenimente inca.")
+            else:
+                for index, event in enumerate(broker.events, start=1):
+                    print(f"{index}. {event}")
         else:
-            print("Optiune necunoscuta. Alege un numar intre 0 si 6.")
+            print("Optiune necunoscuta. Alege un numar intre 0 si 7.")
 
 
 if __name__ == "__main__":

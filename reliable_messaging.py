@@ -27,7 +27,11 @@ class Broker:
         self._pending: deque[Message] = deque()
         self._in_flight: dict[str, Message] = {}
         self.dead_letters: list[Message] = []
+        self.events: list[str] = []
         self._next_sequence = 1
+
+    def record_event(self, event: str) -> None:
+        self.events.append(event)
 
     def publish(self, payload: Any, message_id: str | None = None) -> Message:
         message = Message(
@@ -37,6 +41,7 @@ class Broker:
         )
         self._next_sequence += 1
         self._pending.append(message)
+        self.record_event(f"PUBLISH message_id={message.message_id} payload={message.payload!r}")
         return message
 
     def deliver(self) -> Message | None:
@@ -50,19 +55,29 @@ class Broker:
             attempts=message.attempts + 1,
         )
         self._in_flight[leased.message_id] = leased
+        self.record_event(
+            f"DELIVER message_id={leased.message_id} attempt={leased.attempts}"
+        )
         return leased
 
     def ack(self, message_id: str) -> None:
         if message_id not in self._in_flight:
             raise KeyError(f"message {message_id!r} is not in flight")
         del self._in_flight[message_id]
+        self.record_event(f"ACK message_id={message_id}")
 
     def nack(self, message_id: str) -> None:
         message = self._in_flight.pop(message_id)
         if message.attempts >= self.max_attempts:
             self.dead_letters.append(message)
+            self.record_event(
+                f"NACK message_id={message_id} attempt={message.attempts} action=DLQ"
+            )
         else:
             self._pending.appendleft(message)
+            self.record_event(
+                f"NACK message_id={message_id} attempt={message.attempts} action=RETRY"
+            )
 
     def recover_unacked(self) -> None:
         """Redeliver leases left behind by a crashed consumer."""
@@ -70,8 +85,14 @@ class Broker:
             message = self._in_flight.pop(message_id)
             if message.attempts >= self.max_attempts:
                 self.dead_letters.append(message)
+                self.record_event(
+                    f"RECOVER message_id={message_id} attempt={message.attempts} action=DLQ"
+                )
             else:
                 self._pending.appendleft(message)
+                self.record_event(
+                    f"RECOVER message_id={message_id} attempt={message.attempts} action=RETRY"
+                )
 
     @property
     def pending_count(self) -> int:
@@ -103,11 +124,18 @@ class Consumer:
             try:
                 self.effect(message.payload)
             except Exception:
+                self.broker.record_event(
+                    f"EFFECT_FAILED message_id={message.message_id}"
+                )
                 self.broker.nack(message.message_id)
                 raise
             self.processed_ids.add(message.message_id)
+            self.broker.record_event(f"EFFECT_APPLIED message_id={message.message_id}")
+        else:
+            self.broker.record_event(f"DUPLICATE_IGNORED message_id={message.message_id}")
 
         if crash_after_effect:
+            self.broker.record_event(f"CRASH_BEFORE_ACK message_id={message.message_id}")
             raise ConsumerCrash(
                 f"consumer crashed before ACK for {message.message_id}"
             )

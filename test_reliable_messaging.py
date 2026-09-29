@@ -84,6 +84,31 @@ class ReliableMessagingTests(unittest.TestCase):
         self.assertEqual(attempts, ["retry-me", "retry-me"])
         self.assertEqual([item.message_id for item in broker.dead_letters], ["retry-1"])
 
+    def test_event_history_records_redelivery_and_deduplication(self):
+        broker = Broker()
+        consumer = Consumer(broker, lambda payload: None)
+        Producer(broker).send("payment", message_id="payment-1")
+
+        with self.assertRaises(ConsumerCrash):
+            consumer.process_one(crash_after_effect=True)
+
+        broker.recover_unacked()
+        consumer.process_until_empty()
+
+        self.assertEqual(
+            broker.events,
+            [
+                "PUBLISH message_id=payment-1 payload='payment'",
+                "DELIVER message_id=payment-1 attempt=1",
+                "EFFECT_APPLIED message_id=payment-1",
+                "CRASH_BEFORE_ACK message_id=payment-1",
+                "RECOVER message_id=payment-1 attempt=1 action=RETRY",
+                "DELIVER message_id=payment-1 attempt=2",
+                "DUPLICATE_IGNORED message_id=payment-1",
+                "ACK message_id=payment-1",
+            ],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
