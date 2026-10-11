@@ -8,10 +8,45 @@ Acesta este primul increment al proiectului: flux producer-broker-consumer cu ga
 python -m unittest -v
 python reliable_messaging.py
 python reliable_messaging.py --interactive
+python reliable_messaging.py --server 127.0.0.1 9000
+python reliable_messaging.py --client 127.0.0.1 9000
+python reliable_messaging.py --menu
 python manual_test.py
 ```
 
 Cu `--interactive`, scrii mesajele tale în consolă. O linie goală încheie introducerea și consumerul procesează mesajele prin broker.
+
+## Rulare client-server prin TCP
+
+Pornește serverul într-un terminal:
+
+```powershell
+python reliable_messaging.py --server 127.0.0.1 9000
+```
+
+În alt terminal pornește clientul:
+
+```powershell
+python reliable_messaging.py --client 127.0.0.1 9000
+```
+
+Serverul deține brokerul și consumerul. Clientul trimite comenzi JSON delimitate
+cu newline, iar serverul răspunde tot cu JSON. Pentru fiecare mesaj publicat,
+serverul aplică efectul local și trimite răspunsul `status: "acked"`.
+Protocolul suportă și comenzile `status`, `events` și `shutdown`. Payload-ul
+trebuie să fie serializabil JSON. Livrarea rămâne at-least-once în memoria
+procesului; oprirea serverului pierde coada și identificatorii de deduplicare.
+
+Pentru utilizare fără argumente repetate, pornește meniul:
+
+```powershell
+python reliable_messaging.py --menu
+```
+
+Meniul permite selectarea serverului local, adăugarea unui server cu host și
+port personalizate, pornirea serverului, conectarea clientului și afișarea
+statusului sau a evenimentelor. Serverele adăugate sunt memorate doar în
+sesiunea curentă a meniului.
 
 
 În meniul manual poți alege mesaj normal, mesaj duplicat, crash după efect înainte de ACK, eroare cu retry și DLQ, ordering pentru trei mesaje, afișarea stării brokerului sau istoricul complet al evenimentelor din sesiune.

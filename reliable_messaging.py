@@ -4,7 +4,11 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass
+import json
+import socket
+import socketserver
 import sys
+from threading import RLock
 from typing import Any, Callable
 from uuid import uuid4
 
@@ -159,6 +163,197 @@ class Producer:
         return self.broker.publish(payload, message_id)
 
 
+class TCPBrokerRequestHandler(socketserver.StreamRequestHandler):
+    """Handle newline-delimited JSON commands for a broker-owned TCP server."""
+
+    def handle(self) -> None:
+        server = self.server
+        if not isinstance(server, TCPBrokerServer):
+            raise RuntimeError("invalid TCP broker server")
+
+        for raw_request in self.rfile:
+            try:
+                request = json.loads(raw_request.decode("utf-8"))
+                response = server.handle_request(request)
+            except (UnicodeDecodeError, json.JSONDecodeError, ValueError, KeyError) as error:
+                response = {"ok": False, "error": str(error)}
+            except Exception as error:
+                response = {"ok": False, "error": f"internal server error: {error}"}
+
+            self.wfile.write((json.dumps(response) + "\n").encode("utf-8"))
+            self.wfile.flush()
+
+
+class TCPBrokerServer(socketserver.ThreadingTCPServer):
+    """Expose one in-memory Broker through a small TCP/JSON protocol."""
+
+    allow_reuse_address = True
+    daemon_threads = True
+
+    def __init__(
+        self,
+        server_address: tuple[str, int],
+        max_attempts: int = 3,
+    ) -> None:
+        super().__init__(server_address, TCPBrokerRequestHandler)
+        self.broker = Broker(max_attempts=max_attempts)
+        self.effects: list[Any] = []
+        self.consumer = Consumer(self.broker, self.effects.append)
+        self._state_lock = RLock()
+
+    def handle_request(self, request: Any) -> dict[str, Any]:
+        with self._state_lock:
+            return self._handle_request(request)
+
+    def _handle_request(self, request: Any) -> dict[str, Any]:
+        if not isinstance(request, dict):
+            raise ValueError("request must be a JSON object")
+
+        action = request.get("action")
+        if action == "publish":
+            if "payload" not in request:
+                raise ValueError("publish requires a payload")
+            message = Producer(self.broker).send(
+                request["payload"],
+                message_id=request.get("message_id"),
+            )
+            self.consumer.process_until_empty()
+            return {
+                "ok": True,
+                "message_id": message.message_id,
+                "sequence": message.sequence,
+                "status": "acked",
+            }
+        if action == "status":
+            return {
+                "ok": True,
+                "pending": self.broker.pending_count,
+                "in_flight": self.broker.in_flight_count,
+                "dead_letters": len(self.broker.dead_letters),
+                "processed": len(self.effects),
+            }
+        if action == "events":
+            return {"ok": True, "events": list(self.broker.events)}
+        if action == "shutdown":
+            self.shutdown()
+            return {"ok": True, "status": "shutting-down"}
+        raise ValueError(f"unknown action: {action!r}")
+
+
+def run_tcp_server(host: str = "127.0.0.1", port: int = 9000) -> None:
+    """Start the TCP server and keep it running until interrupted."""
+    with TCPBrokerServer((host, port)) as server:
+        print(f"Server TCP pornit pe {host}:{server.server_address[1]}")
+        try:
+            server.serve_forever()
+        except KeyboardInterrupt:
+            print("\nServer oprit.")
+        finally:
+            server.shutdown()
+
+
+def send_tcp_request(
+    host: str,
+    port: int,
+    request: dict[str, Any],
+    timeout: float = 5.0,
+) -> dict[str, Any]:
+    """Send one JSON request and return the server response."""
+    with socket.create_connection((host, port), timeout=timeout) as connection:
+        connection.sendall((json.dumps(request) + "\n").encode("utf-8"))
+        with connection.makefile("rb") as response_stream:
+            response = response_stream.readline()
+    if not response:
+        raise ConnectionError("server closed the connection without a response")
+    decoded = json.loads(response.decode("utf-8"))
+    if not isinstance(decoded, dict):
+        raise ValueError("server response must be a JSON object")
+    return decoded
+
+
+def interactive_tcp_client(host: str, port: int) -> None:
+    """Read console messages and publish them through the TCP server."""
+    print(f"Client conectat la {host}:{port}. Linie goala pentru terminare.")
+    while True:
+        payload = input("Mesaj: ")
+        if not payload:
+            break
+        response = send_tcp_request(host, port, {"action": "publish", "payload": payload})
+        if not response.get("ok"):
+            print(f"Eroare server: {response.get('error', 'necunoscuta')}")
+        else:
+            print(f"ACK: message_id={response['message_id']}")
+
+
+def tcp_menu() -> None:
+    """Choose a saved TCP endpoint and operation from the console."""
+    endpoints = {
+        "1": ("Server local", "127.0.0.1", 9000),
+    }
+
+    while True:
+        print("\n========== MENIU TCP ==========")
+        for key, (name, host, port) in endpoints.items():
+            print(f"{key}. {name} ({host}:{port})")
+        print("n. Adauga server")
+        print("0. Iesire")
+        choice = input("Alege serverul: ").strip().lower()
+
+        if choice == "0":
+            return
+        if choice == "n":
+            name = input("Numele serverului: ").strip()
+            host = input("Adresa serverului: ").strip()
+            port_text = input("Portul serverului: ").strip()
+            if not name or not host:
+                print("Numele si adresa sunt obligatorii.")
+                continue
+            try:
+                port = int(port_text)
+                if not 1 <= port <= 65535:
+                    raise ValueError
+            except ValueError:
+                print("Portul trebuie sa fie un numar intre 1 si 65535.")
+                continue
+            next_key = str(max((int(key) for key in endpoints), default=0) + 1)
+            endpoints[next_key] = (name, host, port)
+            print(f"Serverul {name!r} a fost adaugat ca optiunea {next_key}.")
+            continue
+
+        endpoint = endpoints.get(choice)
+        if endpoint is None:
+            print("Optiune necunoscuta.")
+            continue
+
+        name, host, port = endpoint
+        print(f"\nServer selectat: {name} ({host}:{port})")
+        print("1. Porneste serverul")
+        print("2. Conecteaza clientul")
+        print("3. Afiseaza statusul")
+        print("4. Afiseaza evenimentele")
+        print("b. Inapoi")
+        action = input("Alege actiunea: ").strip().lower()
+
+        if action == "1":
+            run_tcp_server(host, port)
+            return
+        if action == "2":
+            try:
+                interactive_tcp_client(host, port)
+            except (ConnectionError, OSError) as error:
+                print(f"Conectarea a esuat: {error}")
+        elif action == "3":
+            try:
+                print(send_tcp_request(host, port, {"action": "status"}))
+            except (ConnectionError, OSError) as error:
+                print(f"Conectarea a esuat: {error}")
+        elif action == "4":
+            try:
+                print(send_tcp_request(host, port, {"action": "events"}))
+            except (ConnectionError, OSError) as error:
+                print(f"Conectarea a esuat: {error}")
+
+
 def demo() -> list[Any]:
     effects: list[Any] = []
     broker = Broker(max_attempts=3)
@@ -194,7 +389,19 @@ def interactive_demo() -> None:
 
 
 if __name__ == "__main__":
-    if len(sys.argv) > 1 and sys.argv[1] == "--interactive":
+    if len(sys.argv) > 1 and sys.argv[1] == "--menu":
+        tcp_menu()
+    elif len(sys.argv) > 1 and sys.argv[1] == "--server":
+        run_tcp_server(
+            host=sys.argv[2] if len(sys.argv) > 2 else "127.0.0.1",
+            port=int(sys.argv[3]) if len(sys.argv) > 3 else 9000,
+        )
+    elif len(sys.argv) > 1 and sys.argv[1] == "--client":
+        interactive_tcp_client(
+            host=sys.argv[2] if len(sys.argv) > 2 else "127.0.0.1",
+            port=int(sys.argv[3]) if len(sys.argv) > 3 else 9000,
+        )
+    elif len(sys.argv) > 1 and sys.argv[1] == "--interactive":
         interactive_demo()
     else:
         print(demo())

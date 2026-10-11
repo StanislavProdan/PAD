@@ -1,6 +1,15 @@
 import unittest
+from threading import Thread
+import time
 
-from reliable_messaging import Broker, Consumer, ConsumerCrash, Producer
+from reliable_messaging import (
+    Broker,
+    Consumer,
+    ConsumerCrash,
+    Producer,
+    TCPBrokerServer,
+    send_tcp_request,
+)
 
 
 class ReliableMessagingTests(unittest.TestCase):
@@ -108,6 +117,32 @@ class ReliableMessagingTests(unittest.TestCase):
                 "ACK message_id=payment-1",
             ],
         )
+
+    def test_tcp_client_publishes_to_server_owned_broker(self):
+        server = TCPBrokerServer(("127.0.0.1", 0))
+        thread = Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        host, port = server.server_address
+        try:
+            response = send_tcp_request(
+                host,
+                port,
+                {
+                    "action": "publish",
+                    "payload": "tcp-message",
+                    "message_id": "tcp-1",
+                },
+            )
+            self.assertEqual(response["status"], "acked")
+            self.assertEqual(server.effects, ["tcp-message"])
+
+            status = send_tcp_request(host, port, {"action": "status"})
+            self.assertEqual(status["processed"], 1)
+            self.assertEqual(status["pending"], 0)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
 
 
 if __name__ == "__main__":
