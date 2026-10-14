@@ -1,0 +1,42 @@
+syntax = "proto3";
+
+package reliable.messaging.v1;
+
+service ReliableMessaging {
+  rpc Publish(PublishRequest) returns (PublishResponse);
+  rpc GetOperationStatus(OperationStatusRequest) returns (OperationStatusResponse);
+}
+
+enum Outcome {
+  OUTCOME_UNSPECIFIED = 0;
+  APPLIED = 1;
+  NOT_APPLIED = 2;
+  AMBIGUOUS = 3;
+}
+
+message PublishRequest {
+  string contract_version = 1;
+  string request_id = 2;
+  string payload = 3;
+}
+
+message PublishResponse {
+  string contract_version = 1;
+  string request_id = 2;
+  string message_id = 3;
+  Outcome outcome = 4;
+  string detail = 5;
+}
+
+message OperationStatusRequest {
+  string contract_version = 1;
+  string request_id = 2;
+}
+
+message OperationStatusResponse {
+  string contract_version = 1;
+  string request_id = 2;
+  string message_id = 3;
+  Outcome outcome = 4;
+  string detail = 5;
+}

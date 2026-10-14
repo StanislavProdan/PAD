@@ -3,6 +3,10 @@ name = "reliable-messaging"
 version = "0.1.0"
 description = "Increment 1: reliable producer-broker-consumer messaging"
 requires-python = ">=3.10"
+dependencies = [
+    "grpcio>=1.84",
+    "grpcio-tools>=1.84",
+]
 
 [tool.pytest.ini_options]
-testpaths = ["test_reliable_messaging.py"]
+testpaths = ["test_reliable_messaging.py", "test_grpc_service.py"]

@@ -48,6 +48,95 @@ port personalizate, pornirea serverului, conectarea clientului și afișarea
 statusului sau a evenimentelor. Serverele adăugate sunt memorate doar în
 sesiunea curentă a meniului.
 
+## Increment gRPC: contract versionat și rezultat ambiguu
+Laboratorul implementează un serviciu gRPC pentru publicarea mesajelor. Scopul principal este ca mesajele să nu fie procesate de două ori și ca o operație să poată fi verificată chiar dacă răspunsul inițial se pierde.
+Incrementul gRPC este implementat separat în `grpc_service.py`, iar contractul
+explicit se află în `reliable_messaging.proto`. Binding-urile Python generate
+(`reliable_messaging_pb2.py` și `reliable_messaging_pb2_grpc.py`) sunt incluse
+pentru ca aplicația să poată porni fără `protoc` instalat local.
+Implementarea oferă un contract gRPC versionat, publicare idempotentă prin request_id, identificarea mesajului prin message_id și un mecanism de fallback prin GetOperationStatus. În cazul unui timeout, clientul nu repetă efectul, ci verifică starea operației. Testele verifică idempotency, timeout-ul cu status fallback și respingerea versiunilor incompatibile.
+
+Pe scurt, clientul comunică cu serverul prin metodele gRPC `Publish` și
+`GetOperationStatus`, definite în fișierul `.proto`. Folosirea aceluiași
+`request_id` previne procesarea duplicată a unui mesaj. Dacă apare un timeout,
+clientul verifică starea operației fără să repete efectul. Pentru rulare sunt
+necesare librăriile `grpcio` și `grpcio-tools`, instalabile cu:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -e .
+```
+
+Demonstrația client-server poate fi rulată cu:
+
+```powershell
+.\.venv\Scripts\python.exe demo_grpc.py
+```
+
+Contractul `reliable.messaging.v1` expune:
+
+- `Publish`, cu `contract_version`, `request_id` (cheie de idempotency) și
+  `payload`;
+- `GetOperationStatus`, fallback-ul sigur pentru rezolvarea unei operații;
+- `Outcome`, care poate fi `APPLIED`, `NOT_APPLIED` sau `AMBIGUOUS`.
+
+Clientul transmite deadline-ul prin timeout-ul gRPC. Dacă deadline-ul expiră
+sau apelul este anulat, `GrpcMessagingClient.publish()` nu repetă efectul:
+interoghează `GetOperationStatus` folosind același `request_id`. Astfel, dacă
+serverul a aplicat efectul dar răspunsul s-a pierdut, clientul primește
+`APPLIED` și același `message_id`; un retry cu aceeași cheie rămâne idempotent.
+Un `request_id` necunoscut este raportat ca `NOT_APPLIED`, iar versiunile de
+contract necunoscute sunt respinse cu `UNIMPLEMENTED`.
+
+Exemplu minimal:
+
+```python
+from grpc_service import GrpcMessagingClient, GrpcMessagingServer
+
+server = GrpcMessagingServer()
+server.start()
+client = GrpcMessagingClient(f"127.0.0.1:{server.address}", timeout=2)
+try:
+    response = client.publish("order-created", request_id="order-1")
+    print(response.outcome, response.message_id)
+finally:
+    client.close()
+    server.stop()
+```
+
+Testele incrementului se rulează cu:
+
+```powershell
+python -m unittest -v test_grpc_service.py
+```
+
+### Verificarea cerințelor laboratorului
+
+Implementarea respectă cerințele pentru integrarea RPC prin gRPC astfel:
+
+- **Serviciu RPC:** clientul și serverul comunică prin metodele `Publish` și
+  `GetOperationStatus`, definite în contractul
+  [reliable_messaging.proto](reliable_messaging.proto).
+- **Contract explicit:** fișierul `.proto` definește serviciul, mesajele,
+  câmpurile și valorile posibile ale rezultatului.
+- **Versionare și compatibilitate:** fiecare cerere conține
+  `contract_version`. Serverul acceptă versiunea `v1` și respinge versiunile
+  necunoscute cu statusul gRPC `UNIMPLEMENTED`.
+- **Deadline:** clientul transmite un timeout gRPC pentru apelul `Publish`.
+  Dacă serverul nu răspunde în timpul stabilit, apelul expiră.
+- **Cancellation:** clientul tratează anularea apelului împreună cu expirarea
+  deadline-ului și nu repetă automat efectul operației.
+- **Idempotency:** `request_id` identifică unic operația. Retrimiterea aceleiași
+  cereri returnează operația memorată și nu execută efectul a doua oară.
+- **Fallback:** după `DEADLINE_EXCEEDED` sau `CANCELLED`, clientul apelează
+  `GetOperationStatus` folosind același `request_id`.
+- **Răspuns pierdut după efectuarea operației:** serverul poate aplica efectul
+  înainte ca răspunsul să ajungă la client. Clientul verifică statusul
+  operației și poate primi `APPLIED` și același `message_id`, fără dublarea
+  efectului.
+
+Prin urmare, laboratorul tratează explicit ambiguitatea rezultatului într-un
+sistem distribuit, nu doar efectuarea unui apel gRPC simplu.
+
 
 În meniul manual poți alege mesaj normal, mesaj duplicat, crash după efect înainte de ACK, eroare cu retry și DLQ, ordering pentru trei mesaje, afișarea stării brokerului sau istoricul complet al evenimentelor din sesiune.
 
