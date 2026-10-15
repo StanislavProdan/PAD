@@ -2,6 +2,20 @@
 
 Acesta este primul increment al proiectului: flux producer-broker-consumer cu garantii explicite si limite documentate.
 
+## Repository si livrabile
+
+Repository-ul proiectului este:
+
+https://github.com/StanislavProdan/PAD
+
+Livrabilele arhitecturale sunt organizate astfel:
+
+- diagrama: [docs/architecture.md](docs/architecture.md);
+- decizia arhitecturala: [docs/adr/001-messaging-boundary.md](docs/adr/001-messaging-boundary.md);
+- dovada scenariului de esec: [docs/failure-scenario.md](docs/failure-scenario.md);
+- incrementul 1: tag-ul `lab1-v1.0`;
+- incrementul 2: tag-ul `lab2-v1.0`.
+
 ## Rulare
 
 ```powershell
