@@ -16,6 +16,23 @@ Livrabilele arhitecturale sunt organizate astfel:
 - incrementul 1: tag-ul `lab1-v1.0`;
 - incrementul 2: tag-ul `lab2-v1.0`.
 
+## Diagrama arhitecturii
+
+```mermaid
+flowchart TD
+    Client[Client TCP sau gRPC] --> Gateway[API / Gateway]
+    Gateway --> Order[Order Service logic]
+    Order --> Broker[Broker de mesaje]
+    Broker --> Consumer[Consumer]
+    Consumer --> Effect[Efect local sau serviciu extern simulat]
+    Consumer --> Broker
+    Broker --> DLQ[Dead-letter queue]
+    Order -.-> State[(Stare in memorie)]
+```
+
+Diagrama completă și delimitarea responsabilităților pe increment se află în
+[docs/architecture.md](docs/architecture.md).
+
 ## Rulare
 
 ```powershell
