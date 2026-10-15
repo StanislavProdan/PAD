@@ -106,36 +106,8 @@ finally:
 Testele incrementului se rulează cu:
 
 ```powershell
-python -m unittest -v test_grpc_service.py
+.\.venv\Scripts\python.exe -m unittest -v test_grpc_service.py
 ```
-
-### Verificarea cerințelor laboratorului
-
-Implementarea respectă cerințele pentru integrarea RPC prin gRPC astfel:
-
-- **Serviciu RPC:** clientul și serverul comunică prin metodele `Publish` și
-  `GetOperationStatus`, definite în contractul
-  [reliable_messaging.proto](reliable_messaging.proto).
-- **Contract explicit:** fișierul `.proto` definește serviciul, mesajele,
-  câmpurile și valorile posibile ale rezultatului.
-- **Versionare și compatibilitate:** fiecare cerere conține
-  `contract_version`. Serverul acceptă versiunea `v1` și respinge versiunile
-  necunoscute cu statusul gRPC `UNIMPLEMENTED`.
-- **Deadline:** clientul transmite un timeout gRPC pentru apelul `Publish`.
-  Dacă serverul nu răspunde în timpul stabilit, apelul expiră.
-- **Cancellation:** clientul tratează anularea apelului împreună cu expirarea
-  deadline-ului și nu repetă automat efectul operației.
-- **Idempotency:** `request_id` identifică unic operația. Retrimiterea aceleiași
-  cereri returnează operația memorată și nu execută efectul a doua oară.
-- **Fallback:** după `DEADLINE_EXCEEDED` sau `CANCELLED`, clientul apelează
-  `GetOperationStatus` folosind același `request_id`.
-- **Răspuns pierdut după efectuarea operației:** serverul poate aplica efectul
-  înainte ca răspunsul să ajungă la client. Clientul verifică statusul
-  operației și poate primi `APPLIED` și același `message_id`, fără dublarea
-  efectului.
-
-Prin urmare, laboratorul tratează explicit ambiguitatea rezultatului într-un
-sistem distribuit, nu doar efectuarea unui apel gRPC simplu.
 
 
 În meniul manual poți alege mesaj normal, mesaj duplicat, crash după efect înainte de ACK, eroare cu retry și DLQ, ordering pentru trei mesaje, afișarea stării brokerului sau istoricul complet al evenimentelor din sesiune.
