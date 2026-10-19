@@ -16,6 +16,23 @@ Livrabilele arhitecturale sunt organizate astfel:
 - incrementul 1: tag-ul `lab1-v1.0`;
 - incrementul 2: tag-ul `lab2-v1.0`.
 
+## Structura proiectului
+
+Fișierele din rădăcină sunt împărțite pe roluri:
+
+| Zonă | Fișiere | Rol |
+| --- | --- | --- |
+| Nucleu și transport TCP | `reliable_messaging.py` | Brokerul, producerul, consumerul, DLQ și protocolul TCP/JSON |
+| Contract și transport gRPC | `reliable_messaging.proto`, `grpc_service.py` | Contractul versionat și implementarea serviciului gRPC |
+| Binding-uri generate | `reliable_messaging_pb2.py`, `reliable_messaging_pb2_grpc.py` | Cod generat din contractul `.proto`; este urmărit intenționat pentru rulare fără `protoc` |
+| Exemple | `demo_grpc.py` | Demonstrație minimală client-server gRPC |
+| Testare | `test_reliable_messaging.py`, `test_grpc_service.py`, `manual_test.py` | Teste automate și scenarii interactive |
+| Comenzi Windows | `mesaje.bat`, `manual.bat`, `teste.bat` | Scurtături pentru rularea demo-ului, testării manuale și testelor |
+| Documentație | `docs/`, `README.md` | Arhitectură, decizii și scenarii explicate |
+
+`.venv/` și `__pycache__/` sunt artefacte locale generate automat și nu fac parte
+din proiect; sunt ignorate de Git.
+
 ## Diagrama arhitecturii
 
 ```mermaid
