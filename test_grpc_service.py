@@ -13,7 +13,10 @@ import reliable_messaging_pb2_grpc as pb2_grpc
 
 
 class GrpcMessagingTests(unittest.TestCase):
+    """Testeaza contractul gRPC si garantiile de idempotenta ale serviciului."""
+
     def setUp(self):
+        # Fiecare test porneste un server gRPC nou si retine efectele aplicate.
         self.effects = []
         self.server = GrpcMessagingServer(
             ReliableMessagingServicer(self.effects.append)
@@ -22,10 +25,13 @@ class GrpcMessagingTests(unittest.TestCase):
         self.client = GrpcMessagingClient(f"127.0.0.1:{self.server.address}")
 
     def tearDown(self):
+        # Inchidem clientul si serverul pentru a nu lasa resurse intre teste.
         self.client.close()
         self.server.stop()
 
     def test_publish_is_versioned_and_idempotent(self):
+        # Verifica versiunea contractului si faptul ca acelasi request_id
+        # aplica efectul o singura data si pastreaza acelasi message_id.
         first = self.client.publish("created", "request-1")
         second = self.client.publish("created", "request-1")
 
@@ -35,6 +41,9 @@ class GrpcMessagingTests(unittest.TestCase):
         self.assertEqual(self.effects, ["created"])
 
     def test_deadline_uses_status_fallback_after_effect(self):
+        # Verifica scenariul in care efectul este aplicat, dar raspunsul initial
+        # expira. Clientul afla rezultatul prin GetOperationStatus, fara retry
+        # al efectului.
         self.client.close()
         delayed_server = GrpcMessagingServer(
             ReliableMessagingServicer(self.effects.append, response_delay=0.15)
@@ -53,6 +62,8 @@ class GrpcMessagingTests(unittest.TestCase):
             delayed_server.stop()
 
     def test_unsupported_contract_version_is_rejected(self):
+        # Verifica respingerea unei cereri care foloseste o versiune de contract
+        # necunoscuta serverului.
         channel = grpc.insecure_channel(f"127.0.0.1:{self.server.address}")
         stub = pb2_grpc.ReliableMessagingStub(channel)
         with self.assertRaises(grpc.RpcError) as raised:

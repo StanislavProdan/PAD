@@ -13,7 +13,11 @@ from reliable_messaging import (
 
 
 class ReliableMessagingTests(unittest.TestCase):
+    """Testeaza brokerul, consumerul si transportul TCP pentru mesaje fiabile."""
+
     def test_crash_after_effect_redelivers_without_duplicate_effect(self):
+        # Verifica faptul ca un mesaj ramas neconfirmat dupa un crash este
+        # redelivrat, dar efectul local nu este aplicat din nou.
         effects = []
         broker = Broker(max_attempts=3)
         consumer = Consumer(broker, effects.append)
@@ -32,6 +36,7 @@ class ReliableMessagingTests(unittest.TestCase):
         self.assertEqual(broker.dead_letters, [])
 
     def test_messages_are_processed_in_fifo_order(self):
+        # Verifica pastrarea ordinii FIFO pentru mesajele publicate in broker.
         effects = []
         broker = Broker()
         consumer = Consumer(broker, effects.append)
@@ -45,6 +50,8 @@ class ReliableMessagingTests(unittest.TestCase):
         self.assertEqual(effects, ["first", "second", "third"])
 
     def test_nack_retries_then_moves_message_to_dlq(self):
+        # Verifica retry-ul dupa NACK si mutarea mesajului in dead-letter queue
+        # dupa atingerea numarului maxim de incercari.
         broker = Broker(max_attempts=2)
         message = Producer(broker).send("invalid", message_id="bad-1")
 
@@ -61,6 +68,8 @@ class ReliableMessagingTests(unittest.TestCase):
         self.assertEqual([item.message_id for item in broker.dead_letters], ["bad-1"])
 
     def test_duplicate_message_id_does_not_repeat_effect(self):
+        # Verifica deduplicarea: doua mesaje cu acelasi message_id produc un
+        # singur efect local.
         effects = []
         broker = Broker()
         consumer = Consumer(broker, effects.append)
@@ -73,6 +82,8 @@ class ReliableMessagingTests(unittest.TestCase):
         self.assertEqual(effects, ["shipment-created"])
 
     def test_effect_failure_is_nacked_for_retry(self):
+        # Verifica faptul ca esecul efectului produce NACK, permite un retry
+        # si ajunge in DLQ dupa esecuri repetate.
         attempts = []
         broker = Broker(max_attempts=2)
 
@@ -94,6 +105,8 @@ class ReliableMessagingTests(unittest.TestCase):
         self.assertEqual([item.message_id for item in broker.dead_letters], ["retry-1"])
 
     def test_event_history_records_redelivery_and_deduplication(self):
+        # Verifica istoricul complet pentru publicare, crash, redeliverare,
+        # deduplicare si confirmarea finala prin ACK.
         broker = Broker()
         consumer = Consumer(broker, lambda payload: None)
         Producer(broker).send("payment", message_id="payment-1")
@@ -119,6 +132,8 @@ class ReliableMessagingTests(unittest.TestCase):
         )
 
     def test_tcp_client_publishes_to_server_owned_broker(self):
+        # Verifica faptul ca un client TCP publica in brokerul detinut de
+        # server si primeste statusul corect dupa procesarea mesajului.
         server = TCPBrokerServer(("127.0.0.1", 0))
         thread = Thread(target=server.serve_forever, daemon=True)
         thread.start()
