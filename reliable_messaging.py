@@ -19,10 +19,11 @@ class Message:
     sequence: int
     payload: Any
     attempts: int = 0
+    message_type: str = "default"
 
 
 class Broker:
-    """FIFO broker with explicit ACK/NACK, redelivery and a dead-letter queue."""
+    """Broker FIFO cu ACK/NACK explicit, redelivrare si coada de mesaje moarte."""
 
     def __init__(self, max_attempts: int = 3) -> None:
         if max_attempts < 1:
@@ -33,119 +34,145 @@ class Broker:
         self.dead_letters: list[Message] = []
         self.events: list[str] = []
         self._next_sequence = 1
+        self._lock = RLock()
 
     def record_event(self, event: str) -> None:
-        self.events.append(event)
+        with self._lock:
+            self.events.append(event)
 
-    def publish(self, payload: Any, message_id: str | None = None) -> Message:
-        message = Message(
-            message_id=message_id or str(uuid4()),
-            sequence=self._next_sequence,
-            payload=payload,
-        )
-        self._next_sequence += 1
-        self._pending.append(message)
-        self.record_event(f"PUBLISH message_id={message.message_id} payload={message.payload!r}")
-        return message
+    def publish(
+        self,
+        payload: Any,
+        message_id: str | None = None,
+        message_type: str = "default",
+    ) -> Message:
+        if not isinstance(message_type, str) or not message_type:
+            raise ValueError("message_type must be a non-empty string")
+        with self._lock:
+            message = Message(
+                message_id=message_id or str(uuid4()),
+                sequence=self._next_sequence,
+                payload=payload,
+                message_type=message_type,
+            )
+            self._next_sequence += 1
+            self._pending.append(message)
+            self.events.append(
+                f"PUBLISH message_id={message.message_id} payload={message.payload!r}"
+            )
+            return message
 
     def deliver(self) -> Message | None:
-        if not self._pending:
-            return None
-        message = self._pending.popleft()
-        leased = Message(
-            message_id=message.message_id,
-            sequence=message.sequence,
-            payload=message.payload,
-            attempts=message.attempts + 1,
-        )
-        self._in_flight[leased.message_id] = leased
-        self.record_event(
-            f"DELIVER message_id={leased.message_id} attempt={leased.attempts}"
-        )
-        return leased
+        with self._lock:
+            if not self._pending:
+                return None
+            message = self._pending.popleft()
+            leased = Message(
+                message_id=message.message_id,
+                sequence=message.sequence,
+                payload=message.payload,
+                attempts=message.attempts + 1,
+                message_type=message.message_type,
+            )
+            self._in_flight[leased.message_id] = leased
+            self.events.append(
+                f"DELIVER message_id={leased.message_id} attempt={leased.attempts}"
+            )
+            return leased
 
     def ack(self, message_id: str) -> None:
-        if message_id not in self._in_flight:
-            raise KeyError(f"message {message_id!r} is not in flight")
-        del self._in_flight[message_id]
-        self.record_event(f"ACK message_id={message_id}")
+        with self._lock:
+            if message_id not in self._in_flight:
+                raise KeyError(f"message {message_id!r} is not in flight")
+            del self._in_flight[message_id]
+            self.events.append(f"ACK message_id={message_id}")
 
     def nack(self, message_id: str) -> None:
-        message = self._in_flight.pop(message_id)
-        if message.attempts >= self.max_attempts:
-            self.dead_letters.append(message)
-            self.record_event(
-                f"NACK message_id={message_id} attempt={message.attempts} action=DLQ"
-            )
-        else:
-            self._pending.appendleft(message)
-            self.record_event(
-                f"NACK message_id={message_id} attempt={message.attempts} action=RETRY"
-            )
-
-    def recover_unacked(self) -> None:
-        """Redeliver leases left behind by a crashed consumer."""
-        for message_id in reversed(list(self._in_flight)):
+        with self._lock:
             message = self._in_flight.pop(message_id)
             if message.attempts >= self.max_attempts:
                 self.dead_letters.append(message)
-                self.record_event(
-                    f"RECOVER message_id={message_id} attempt={message.attempts} action=DLQ"
+                self.events.append(
+                    f"NACK message_id={message_id} attempt={message.attempts} action=DLQ"
                 )
             else:
                 self._pending.appendleft(message)
-                self.record_event(
-                    f"RECOVER message_id={message_id} attempt={message.attempts} action=RETRY"
+                self.events.append(
+                    f"NACK message_id={message_id} attempt={message.attempts} action=RETRY"
                 )
+
+    def recover_unacked(self) -> None:
+        """Retrimite mesajele ramase in asteptare dupa caderea consumerului."""
+        with self._lock:
+            for message_id in reversed(list(self._in_flight)):
+                message = self._in_flight.pop(message_id)
+                if message.attempts >= self.max_attempts:
+                    self.dead_letters.append(message)
+                    self.events.append(
+                        f"RECOVER message_id={message_id} attempt={message.attempts} action=DLQ"
+                    )
+                else:
+                    self._pending.appendleft(message)
+                    self.events.append(
+                        f"RECOVER message_id={message_id} attempt={message.attempts} action=RETRY"
+                    )
 
     @property
     def pending_count(self) -> int:
-        return len(self._pending)
+        with self._lock:
+            return len(self._pending)
 
     @property
     def in_flight_count(self) -> int:
-        return len(self._in_flight)
+        with self._lock:
+            return len(self._in_flight)
 
 
 class ConsumerCrash(RuntimeError):
-    """Represents a process crash after the local effect was applied."""
+    """Reprezinta caderea procesului dupa aplicarea efectului local."""
 
 
 class Consumer:
-    """Applies each message once and ACKs only after the local effect succeeds."""
+    """Aplica fiecare mesaj o singura data si confirma doar dupa succesul efectului."""
 
     def __init__(self, broker: Broker, effect: Callable[[Any], None]) -> None:
         self.broker = broker
         self.effect = effect
         self.processed_ids: set[str] = set()
+        self._lock = RLock()
 
     def process_one(self, crash_after_effect: bool = False) -> Message | None:
-        message = self.broker.deliver()
-        if message is None:
-            return None
+        with self._lock:
+            message = self.broker.deliver()
+            if message is None:
+                return None
 
-        if message.message_id not in self.processed_ids:
-            try:
-                self.effect(message.payload)
-            except Exception:
+            if message.message_id not in self.processed_ids:
+                try:
+                    self.effect(message.payload)
+                except Exception:
+                    self.broker.record_event(
+                        f"EFFECT_FAILED message_id={message.message_id}"
+                    )
+                    self.broker.nack(message.message_id)
+                    raise
+                self.processed_ids.add(message.message_id)
+                self.broker.record_event(f"EFFECT_APPLIED message_id={message.message_id}")
+            else:
                 self.broker.record_event(
-                    f"EFFECT_FAILED message_id={message.message_id}"
+                    f"DUPLICATE_IGNORED message_id={message.message_id}"
                 )
-                self.broker.nack(message.message_id)
-                raise
-            self.processed_ids.add(message.message_id)
-            self.broker.record_event(f"EFFECT_APPLIED message_id={message.message_id}")
-        else:
-            self.broker.record_event(f"DUPLICATE_IGNORED message_id={message.message_id}")
 
-        if crash_after_effect:
-            self.broker.record_event(f"CRASH_BEFORE_ACK message_id={message.message_id}")
-            raise ConsumerCrash(
-                f"consumer crashed before ACK for {message.message_id}"
-            )
+            if crash_after_effect:
+                self.broker.record_event(
+                    f"CRASH_BEFORE_ACK message_id={message.message_id}"
+                )
+                raise ConsumerCrash(
+                    f"consumer crashed before ACK for {message.message_id}"
+                )
 
-        self.broker.ack(message.message_id)
-        return message
+            self.broker.ack(message.message_id)
+            return message
 
     def process_until_empty(self) -> None:
         while self.broker.pending_count:
@@ -159,12 +186,17 @@ class Producer:
     def __init__(self, broker: Broker) -> None:
         self.broker = broker
 
-    def send(self, payload: Any, message_id: str | None = None) -> Message:
-        return self.broker.publish(payload, message_id)
+    def send(
+        self,
+        payload: Any,
+        message_id: str | None = None,
+        message_type: str = "default",
+    ) -> Message:
+        return self.broker.publish(payload, message_id, message_type)
 
 
 class TCPBrokerRequestHandler(socketserver.StreamRequestHandler):
-    """Handle newline-delimited JSON commands for a broker-owned TCP server."""
+    """Proceseaza comenzi JSON delimitate prin linie pentru serverul TCP al brokerului."""
 
     def handle(self) -> None:
         server = self.server
@@ -185,7 +217,7 @@ class TCPBrokerRequestHandler(socketserver.StreamRequestHandler):
 
 
 class TCPBrokerServer(socketserver.ThreadingTCPServer):
-    """Expose one in-memory Broker through a small TCP/JSON protocol."""
+    """Expune un broker din memorie printr-un protocol TCP/JSON simplu."""
 
     allow_reuse_address = True
     daemon_threads = True
@@ -241,7 +273,7 @@ class TCPBrokerServer(socketserver.ThreadingTCPServer):
 
 
 def run_tcp_server(host: str = "127.0.0.1", port: int = 9000) -> None:
-    """Start the TCP server and keep it running until interrupted."""
+    """Porneste serverul TCP si il mentine activ pana la intrerupere."""
     with TCPBrokerServer((host, port)) as server:
         print(f"Server TCP pornit pe {host}:{server.server_address[1]}")
         try:
@@ -258,7 +290,7 @@ def send_tcp_request(
     request: dict[str, Any],
     timeout: float = 5.0,
 ) -> dict[str, Any]:
-    """Send one JSON request and return the server response."""
+    """Trimite o cerere JSON si returneaza raspunsul serverului."""
     with socket.create_connection((host, port), timeout=timeout) as connection:
         connection.sendall((json.dumps(request) + "\n").encode("utf-8"))
         with connection.makefile("rb") as response_stream:
@@ -271,8 +303,135 @@ def send_tcp_request(
     return decoded
 
 
+class TCPReceiverRequestHandler(socketserver.StreamRequestHandler):
+    """Primeste mesaje JSON validate de la un broker de redirectionare."""
+
+    def handle(self) -> None:
+        server = self.server
+        if not isinstance(server, TCPReceiverServer):
+            raise RuntimeError("invalid TCP receiver server")
+        for raw_message in self.rfile:
+            try:
+                message = json.loads(raw_message.decode("utf-8"))
+                if not isinstance(message, dict):
+                    raise ValueError("message must be a JSON object")
+                if not isinstance(message.get("message_type"), str):
+                    raise ValueError("message_type is required")
+                if "payload" not in message:
+                    raise ValueError("payload is required")
+                server.receive(message)
+                response = {"ok": True}
+            except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
+                response = {"ok": False, "error": str(error)}
+            self.wfile.write((json.dumps(response) + "\n").encode("utf-8"))
+            self.wfile.flush()
+
+
+class TCPReceiverServer(socketserver.ThreadingTCPServer):
+    """Punct de intrare pentru receiverul din fluxul sender-broker-receiver."""
+
+    allow_reuse_address = True
+    daemon_threads = True
+
+    def __init__(
+        self,
+        server_address: tuple[str, int],
+        effect: Callable[[Any], None] | None = None,
+    ) -> None:
+        super().__init__(server_address, TCPReceiverRequestHandler)
+        self.effect = effect or (lambda payload: None)
+        self.messages: list[dict[str, Any]] = []
+        self._state_lock = RLock()
+
+    def receive(self, message: dict[str, Any]) -> None:
+        with self._state_lock:
+            self.messages.append(dict(message))
+            self.effect(message["payload"])
+
+
+class TCPForwardingBrokerRequestHandler(socketserver.StreamRequestHandler):
+    """Accepta mesaje de la senderi si le redirectioneaza catre receiverul configurat."""
+
+    def handle(self) -> None:
+        server = self.server
+        if not isinstance(server, TCPForwardingBrokerServer):
+            raise RuntimeError("invalid TCP forwarding broker server")
+        for raw_request in self.rfile:
+            try:
+                request = json.loads(raw_request.decode("utf-8"))
+                response = server.forward(request)
+            except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
+                response = {"ok": False, "error": str(error)}
+            except (ConnectionError, OSError) as error:
+                response = {"ok": False, "error": f"receiver unavailable: {error}"}
+            self.wfile.write((json.dumps(response) + "\n").encode("utf-8"))
+            self.wfile.flush()
+
+
+class TCPForwardingBrokerServer(socketserver.ThreadingTCPServer):
+    """Broker socket minimal care directioneaza mesaje JSON catre receiveri cunoscuti."""
+
+    allow_reuse_address = True
+    daemon_threads = True
+
+    def __init__(
+        self,
+        server_address: tuple[str, int],
+        receiver_address: tuple[str, int],
+        routes: dict[str, tuple[str, int]] | None = None,
+    ) -> None:
+        super().__init__(server_address, TCPForwardingBrokerRequestHandler)
+        self.receiver_address = receiver_address
+        self.routes = dict(routes or {})
+
+    def forward(self, request: Any) -> dict[str, Any]:
+        if not isinstance(request, dict):
+            raise ValueError("message must be a JSON object")
+        message_type = request.get("message_type")
+        if not isinstance(message_type, str) or not message_type:
+            raise ValueError("message_type must be a non-empty string")
+        if "payload" not in request:
+            raise ValueError("payload is required")
+        receiver_address = self.routes.get(message_type, self.receiver_address)
+        response = send_tcp_request(
+            receiver_address[0],
+            receiver_address[1],
+            {
+                "message_id": request.get("message_id", str(uuid4())),
+                "message_type": message_type,
+                "payload": request["payload"],
+            },
+        )
+        if not response.get("ok"):
+            raise ConnectionError(response.get("error", "receiver rejected message"))
+        return {"ok": True, "status": "forwarded"}
+
+
+def send_message(
+    host: str,
+    port: int,
+    payload: Any,
+    message_type: str,
+    message_id: str | None = None,
+    timeout: float = 5.0,
+) -> dict[str, Any]:
+    """Trimite un mesaj JSON catre un broker socket."""
+    if not message_type:
+        raise ValueError("message_type must be a non-empty string")
+    return send_tcp_request(
+        host,
+        port,
+        {
+            "message_id": message_id or str(uuid4()),
+            "message_type": message_type,
+            "payload": payload,
+        },
+        timeout=timeout,
+    )
+
+
 def interactive_tcp_client(host: str, port: int) -> None:
-    """Read console messages and publish them through the TCP server."""
+    """Citeste mesaje din consola si le publica prin serverul TCP."""
     print(f"Client conectat la {host}:{port}. Linie goala pentru terminare.")
     while True:
         payload = input("Mesaj: ")
@@ -286,7 +445,7 @@ def interactive_tcp_client(host: str, port: int) -> None:
 
 
 def tcp_menu() -> None:
-    """Choose a saved TCP endpoint and operation from the console."""
+    """Alege din consola un endpoint TCP salvat si operatia dorita."""
     endpoints = {
         "1": ("Server local", "127.0.0.1", 9000),
     }
@@ -371,7 +530,7 @@ def demo() -> list[Any]:
 
 
 def interactive_demo() -> None:
-    """Read messages from the console and process them through the broker."""
+    """Citeste mesaje din consola si le proceseaza prin broker."""
     effects: list[str] = []
     broker = Broker()
     consumer = Consumer(broker, effects.append)

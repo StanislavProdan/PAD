@@ -1,4 +1,4 @@
-"""Versioned gRPC integration for the reliable messaging increment.
+"""Integrare gRPC versionata pentru incrementul de mesagerie fiabila.
 
 """
 
@@ -27,7 +27,7 @@ class Operation:
 
 
 class ReliableMessagingServicer(pb2_grpc.ReliableMessagingServicer):
-    """Idempotent gRPC endpoint with an explicit operation-status fallback."""
+    """Endpoint gRPC idempotent cu fallback explicit pentru statusul operatiei."""
 
     def __init__(
         self,
@@ -127,7 +127,7 @@ class ReliableMessagingServicer(pb2_grpc.ReliableMessagingServicer):
 
 
 class GrpcMessagingServer:
-    """Lifecycle wrapper used by tests and small applications."""
+    """Wrapper pentru ciclul de viata, folosit de teste si aplicatii mici."""
 
     def __init__(
         self,
@@ -148,7 +148,7 @@ class GrpcMessagingServer:
 
 
 class GrpcMessagingClient:
-    """Client that resolves deadline ambiguity through a status fallback."""
+    """Client care rezolva ambiguitatea timeout-ului prin verificarea statusului."""
 
     def __init__(self, target: str, timeout: float = 1.0) -> None:
         self._channel = grpc.insecure_channel(target)
@@ -189,4 +189,3 @@ class GrpcMessagingClient:
             outcome=status.outcome,
             detail=f"fallback status lookup: {status.detail}",
         )
-

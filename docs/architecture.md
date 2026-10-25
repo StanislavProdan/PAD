@@ -24,10 +24,15 @@ publicare, nu de un proces separat inca.
 ### Incrementul 1
 
 ```text
-TCP client -> TCPBrokerServer -> Producer -> Broker -> Consumer -> efect
+TCP sender -> TCPForwardingBrokerServer -> TCPReceiverServer -> efect
 ```
 
-Brokerul asigura FIFO, ACK/NACK, retry, redelivery, deduplicare si DLQ.
+Protocolul socket este JSON delimitat prin newline. Senderul include
+`message_id`, `message_type` si `payload`; brokerul valideaza mesajul si il
+redirectioneaza catre receiverul configurat. Ambele endpoint-uri folosesc
+`ThreadingTCPServer`, astfel cererile independente nu blocheaza canalul de I/O.
+`TCPBrokerServer` ramane varianta locala cu coada pentru demonstratiile de
+livrare fiabila: asigura FIFO, ACK/NACK, retry, redelivery, deduplicare si DLQ.
 
 ### Incrementul 2
 
@@ -39,6 +44,9 @@ Serviciul gRPC adauga contract versionat, `request_id`, `message_id` si
 `GetOperationStatus` pentru rezolvarea unui timeout. Acest traseu nu publica
 inca in brokerul din incrementul 1; integrarea dintre API, serviciul de comenzi
 si broker este o extindere ulterioara.
+Serverul gRPC foloseste thread pool pentru procesarea concurenta a apelurilor,
+valideaza versiunea contractului si identificatorul operatiei, iar datele sunt
+reprezentate prin mesaje protobuf.
 
 ## Limite asumate
 

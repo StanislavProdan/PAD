@@ -8,7 +8,10 @@ from reliable_messaging import (
     ConsumerCrash,
     Producer,
     TCPBrokerServer,
+    TCPForwardingBrokerServer,
+    TCPReceiverServer,
     send_tcp_request,
+    send_message,
 )
 
 
@@ -158,6 +161,35 @@ class ReliableMessagingTests(unittest.TestCase):
             server.shutdown()
             server.server_close()
             thread.join(timeout=2)
+
+    def test_socket_sender_broker_receiver_routes_json_message(self):
+        received = []
+        receiver = TCPReceiverServer(("127.0.0.1", 0), received.append)
+        receiver_thread = Thread(target=receiver.serve_forever, daemon=True)
+        receiver_thread.start()
+        broker = TCPForwardingBrokerServer(
+            ("127.0.0.1", 0), receiver.server_address
+        )
+        broker_thread = Thread(target=broker.serve_forever, daemon=True)
+        broker_thread.start()
+        try:
+            response = send_message(
+                "127.0.0.1",
+                broker.server_address[1],
+                {"order_id": "order-1"},
+                "order.created",
+                message_id="socket-1",
+            )
+            self.assertEqual(response, {"ok": True, "status": "forwarded"})
+            self.assertEqual(received, [{"order_id": "order-1"}])
+            self.assertEqual(receiver.messages[0]["message_type"], "order.created")
+        finally:
+            broker.shutdown()
+            broker.server_close()
+            receiver.shutdown()
+            receiver.server_close()
+            broker_thread.join(timeout=2)
+            receiver_thread.join(timeout=2)
 
 
 if __name__ == "__main__":
