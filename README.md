@@ -50,6 +50,44 @@ flowchart TD
 Diagrama completă și delimitarea responsabilităților pe increment se află în
 [docs/architecture.md](docs/architecture.md).
 
+## Cerința minimă: sender, broker și receiver
+
+Implementarea TCP respectă cerința minimă în care există trei componente:
+`sender`, `broker` și `receiver`. Traseul unui mesaj este:
+
+```text
+sender -> TCPForwardingBrokerServer -> TCPReceiverServer
+```
+
+### Rolurile componentelor
+
+- **Senderul** este reprezentat de funcția `send_message()`. El construiește
+  mesajul JSON, care conține `message_id`, `message_type` și `payload`, și îl
+  trimite brokerului prin TCP.
+- **Brokerul** este reprezentat de `TCPForwardingBrokerServer`. Adresa
+  receiverului este cunoscută de broker din momentul pornirii, prin parametrul
+  `receiver_address`. Pentru fiecare mesaj primit, brokerul validează datele și
+  alege receiverul configurat.
+- **Receiverul** este reprezentat de `TCPReceiverServer`. El primește mesajul
+  redirecționat și aplică efectul definit de funcția `effect`.
+
+Brokerul nu implementează un mecanism de subscription și nu păstrează o coadă
+de mesaje pentru acest traseu. După validare, el apelează imediat receiverul
+prin `send_tcp_request()`, apoi returnează senderului confirmarea
+`{"ok": true, "status": "forwarded"}`. Astfel, brokerul are doar
+responsabilitatea de a redirecționa mesajul.
+
+Atât brokerul, cât și receiverul folosesc `ThreadingTCPServer`. Prin urmare,
+conexiunile independente sunt gestionate în thread-uri separate și cererile
+pot fi procesate concurent, fără ca o conexiune să blocheze acceptarea altor
+cereri.
+
+Această implementare minimală este separată de `Broker`, `Consumer` și
+`TCPBrokerServer`, care oferă funcționalități suplimentare precum FIFO,
+ACK/NACK, retry, redelivery, deduplicare și dead-letter queue. Aceste
+funcționalități nu sunt necesare pentru cerința minimă sender–broker–receiver,
+dar sunt păstrate pentru demonstrațiile de mesagerie fiabilă.
+
 ## Rulare
 
 ```powershell
@@ -156,6 +194,105 @@ Testele incrementului se rulează cu:
 ```powershell
 .\.venv\Scripts\python.exe -m unittest -v test_grpc_service.py
 ```
+
+## Conformitatea cu obiectivele proiectului
+
+Implementarea actuală respectă obiectivele principale ale celor două
+incrementuri livrate. Componentele sunt separate pe roluri, au protocoale
+explicite și sunt acoperite de teste automate.
+
+### Incrementul 1: sender, broker și receiver
+
+Fluxul TCP implementat este:
+
+```text
+sender -> TCPForwardingBrokerServer -> TCPReceiverServer -> efect
+```
+
+Sunt respectate următoarele obiective:
+
+- **Protocol de comunicare definit:** mesajele sunt transmise prin TCP,
+  folosind JSON delimitat prin newline. Fiecare mesaj poate conține
+  `message_id`, `message_type` și `payload`.
+- **Comunicare între emițător, agent și receptor:** senderul trimite mesajul
+  brokerului, iar brokerul îl transmite receiverului configurat.
+- **Primirea și transmiterea mesajelor:** brokerul primește, validează și
+  redirecționează mesajul imediat, fără să aștepte procesări suplimentare.
+- **Adresă cunoscută a receiverului:** brokerul primește
+  `receiver_address` la pornire și poate avea rute suplimentare în dicționarul
+  `routes`.
+- **Rutare:** valoarea `message_type` poate selecta receiverul potrivit.
+  Dacă nu există o rută specială, se folosește receiverul implicit.
+- **Unicast:** un mesaj este transmis către receiverul selectat prin adresa și
+  portul acestuia.
+- **Procesare concurentă:** brokerul și receiverul folosesc
+  `ThreadingTCPServer`, astfel conexiunile independente pot fi procesate în
+  thread-uri separate.
+- **Separarea responsabilităților:** brokerul are rolul de a valida și
+  redirecționa mesajul, iar receiverul aplică efectul asupra payload-ului.
+- **Testare:** testul `test_socket_sender_broker_receiver_routes_json_message`
+  verifică traseul complet sender–broker–receiver și rutarea unui mesaj.
+
+Pentru acest traseu minimal, brokerul nu are mecanism de subscription și nu
+păstrează o coadă de mesaje. Receiverul păstrează mesajele primite în memorie
+în `TCPReceiverServer.messages`, în principal pentru inspectare și testare.
+
+### Incrementul 2: contract gRPC și operații idempotente
+
+Fluxul gRPC implementat este:
+
+```text
+gRPC client -> ReliableMessagingServicer -> operation store
+```
+
+Sunt respectate următoarele obiective:
+
+- **Protocol și contract explicit:** serviciul este definit în
+  `reliable_messaging.proto`, iar mesajele și metodele sunt generate prin
+  binding-uri protobuf.
+- **Contract versionat:** fiecare cerere conține `contract_version`, iar
+  serverul acceptă versiunea `v1` și respinge versiunile necunoscute cu
+  `UNIMPLEMENTED`.
+- **Identificarea operațiilor:** `request_id` identifică unic o cerere și este
+  folosit pentru idempotency.
+- **Identificarea mesajelor:** fiecare operație primește un `message_id`
+  stabil, reutilizat la apelurile repetate cu același `request_id`.
+- **Prevenirea duplicatelor:** aceeași operație nu aplică efectul de două ori,
+  chiar dacă clientul repetă cererea.
+- **Procesare concurentă:** serverul gRPC folosește un
+  `ThreadPoolExecutor` cu mai mulți workeri.
+- **Rezultat explicit:** operațiile pot avea rezultatul `APPLIED`,
+  `NOT_APPLIED` sau `AMBIGUOUS`, însoțit de o explicație în `detail`.
+- **Tratarea timeout-urilor:** dacă răspunsul `Publish` expiră, clientul nu
+  repetă efectul, ci apelează `GetOperationStatus` cu același `request_id`.
+- **Verificarea rezultatului:** `GetOperationStatus` permite determinarea
+  rezultatului unei operații chiar dacă răspunsul inițial nu a ajuns la client.
+- **Validarea intrărilor:** serverul verifică versiunea contractului și
+  existența lui `request_id`.
+- **Testare:** testele gRPC verifică idempotency, fallback-ul după timeout și
+  respingerea unei versiuni incompatibile.
+
+### Cerințe generale și limite asumate
+
+| Obiectiv | Status | Explicație |
+|---|---|---|
+| Comunicare TCP/IP | ✅ Respectat | Incrementul 1 folosește socket-uri TCP. |
+| Comunicare distribuită client–server | ✅ Respectat | Există componente de rețea separate pentru sender, broker, receiver și clientul gRPC. |
+| Rutarea mesajelor | ✅ Respectat | Brokerul rutează după `message_type` și `routes`. |
+| Comunicare unicast | ✅ Respectat | Mesajele sunt transmise către un receiver configurat. |
+| Procesare concurentă | ✅ Respectat | TCP folosește `ThreadingTCPServer`, iar gRPC folosește thread pool. |
+| Păstrarea mesajelor în timpul execuției | ✅ Parțial respectat | Mesajele și operațiile sunt păstrate în memoria procesului. |
+| Persistență după repornire | ⚠️ Limitare | Nu există încă bază de date sau stocare permanentă. |
+| XML și validarea datelor XML | ⚠️ Limitare | Protocolul actual folosește JSON/protobuf; XML și XSD nu sunt incluse în aceste incrementuri. |
+| UDP multicast | ⚠️ Limitare | Este implementat unicast TCP; multicastul nu este inclus în traseele actuale. |
+| Integrarea gRPC cu brokerul TCP | ⚠️ Limitare | Incrementul 2 este un traseu gRPC separat; integrarea este o extindere ulterioară. |
+| Subscription la broker | ✅ Ne-necesar pentru cerința minimă | Brokerul cunoaște dinainte receiverul și redirecționează direct mesajul. |
+
+Prin urmare, proiectul respectă cerința minimă sender–broker–receiver și
+incrementul 2 gRPC, inclusiv rutarea, comunicarea distribuită, procesarea
+concurentă, contractul versionat și idempotency. XML, UDP multicast,
+persistența permanentă și integrarea dintre cele două trasee sunt documentate
+explicit ca funcționalități care nu fac parte din incrementurile actuale.
 
 
 În meniul manual poți alege mesaj normal, mesaj duplicat, crash după efect înainte de ACK, eroare cu retry și DLQ, ordering pentru trei mesaje, afișarea stării brokerului sau istoricul complet al evenimentelor din sesiune.
