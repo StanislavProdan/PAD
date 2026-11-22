@@ -1,7 +1,7 @@
 [project]
 name = "reliable-messaging"
 version = "0.1.0"
-description = "Increment 1: reliable producer-broker-consumer messaging"
+description = "Reliable messaging and HTTP warehouse reverse proxy"
 requires-python = ">=3.10"
 dependencies = [
     "grpcio>=1.84",
@@ -9,4 +9,4 @@ dependencies = [
 ]
 
 [tool.pytest.ini_options]
-testpaths = ["test_reliable_messaging.py", "test_grpc_service.py"]
+testpaths = ["test_reliable_messaging.py", "test_grpc_service.py", "test_web_proxy.py"]

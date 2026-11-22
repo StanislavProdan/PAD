@@ -48,6 +48,21 @@ Serverul gRPC foloseste thread pool pentru procesarea concurenta a apelurilor,
 valideaza versiunea contractului si identificatorul operatiei, iar datele sunt
 reprezentate prin mesaje protobuf.
 
+### Incrementul Web Proxy
+
+```text
+Client HTTP -> ReverseProxyServer -> WarehouseHTTPServer -> ThreadSafeWarehouse
+                         |
+                         +-> ResponseCache
+                         +-> RoundRobinPool
+                         +-> ConnectionPool
+```
+
+Warehouse-ul expune operații HTTP JSON/XML și procesează cererile concurent cu
+`ThreadingHTTPServer`. Reverse proxy-ul distribuie cererile Round-Robin către
+noduri warehouse, reutilizează conexiunile HTTP și aplică caching temporar
+pentru răspunsurile GET.
+
 ## Limite asumate
 
 - persistenta bazei de date nu este inclusa in aceste incremente;

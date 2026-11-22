@@ -1,6 +1,7 @@
-# Mesagerie fiabila in Python
+# Mesagerie fiabila si Web Proxy in Python
 
-Acesta este primul increment al proiectului: flux producer-broker-consumer cu garantii explicite si limite documentate.
+Proiectul include mesagerie fiabila, contract gRPC si un increment HTTP pentru
+data warehouse, reverse proxy, caching si load balancing Round-Robin.
 
 ## Repository si livrabile
 
@@ -13,8 +14,9 @@ Livrabilele arhitecturale sunt organizate astfel:
 - diagrama: [docs/architecture.md](docs/architecture.md);
 - decizia arhitecturala: [docs/adr/001-messaging-boundary.md](docs/adr/001-messaging-boundary.md);
 - dovada scenariului de esec: [docs/failure-scenario.md](docs/failure-scenario.md);
+- arhitectura Web Proxy: [docs/lab3-web-proxy.md](docs/lab3-web-proxy.md);
 - incrementul 1: tag-ul `lab1-v1.0`;
-- incrementul 2: tag-ul `lab2-v1.0`.
+- incrementul gRPC: tag-ul `lab2-v1.0`.
 
 ## Structura proiectului
 
@@ -25,9 +27,10 @@ Fișierele din rădăcină sunt împărțite pe roluri:
 | Nucleu și transport TCP | `reliable_messaging.py` | Brokerul, producerul, consumerul, DLQ și protocolul TCP/JSON |
 | Contract și transport gRPC | `reliable_messaging.proto`, `grpc_service.py` | Contractul versionat și implementarea serviciului gRPC |
 | Binding-uri generate | `reliable_messaging_pb2.py`, `reliable_messaging_pb2_grpc.py` | Cod generat din contractul `.proto`; este urmărit intenționat pentru rulare fără `protoc` |
-| Exemple | `demo_grpc.py` | Demonstrație minimală client-server gRPC |
-| Testare | `test_reliable_messaging.py`, `test_grpc_service.py`, `manual_test.py` | Teste automate și scenarii interactive |
-| Comenzi Windows | `mesaje.bat`, `manual.bat`, `teste.bat` | Scurtături pentru rularea demo-ului, testării manuale și testelor |
+| Exemple | `demo_grpc.py`, `demo_web_proxy.py` | Demonstrații gRPC și reverse proxy |
+| Warehouse și proxy HTTP | `web_proxy.py` | Server warehouse concurent, reverse proxy, cache și Round-Robin |
+| Testare | `test_reliable_messaging.py`, `test_grpc_service.py`, `test_web_proxy.py`, `manual_test.py` | Teste automate și scenarii interactive |
+| Comenzi Windows | `mesaje.bat`, `manual.bat`, `teste.bat`, `proxy.bat` | Scurtături pentru demo și teste |
 | Documentație | `docs/`, `README.md` | Arhitectură, decizii și scenarii explicate |
 
 `.venv/` și `__pycache__/` sunt artefacte locale generate automat și nu fac parte
@@ -293,6 +296,100 @@ incrementul 2 gRPC, inclusiv rutarea, comunicarea distribuită, procesarea
 concurentă, contractul versionat și idempotency. XML, UDP multicast,
 persistența permanentă și integrarea dintre cele două trasee sunt documentate
 explicit ca funcționalități care nu fac parte din incrementurile actuale.
+
+## Incrementul Web Proxy: warehouse, cache și load balancing
+
+Incrementul HTTP este implementat în `web_proxy.py`. Data warehouse este
+expusă printr-un server `ThreadingHTTPServer`, deci fiecărei cereri îi
+corespunde un thread. Colecția de angajați și coada de modificări sunt
+protejate cu `RLock`, eliminând accesul simultan nesigurat.
+
+Endpoint-uri warehouse:
+
+- `GET /employees?offset=0&limit=100` — listă paginată;
+- `GET /employee?id=1` — angajat după identificator;
+- `PUT /employees` — adăugare sau modificare, cu un corp JSON;
+- `POST /update/employees` — trimite o modificare în coada pull;
+- `GET /update/employees` — extrage modificările puse în coada pull.
+
+Formatul răspunsului poate fi ales prin `Accept: application/json`,
+`Accept: application/xml` sau parametrul `?format=json|xml`.
+
+Reverse proxy-ul este serverul unic pe care îl vede clientul. Acesta:
+
+- selectează warehouse-ul următor prin Round-Robin;
+- păstrează conexiuni reutilizabile către fiecare backend;
+- memorizează răspunsurile `GET` pentru un TTL configurabil;
+- adaugă `X-Cache: HIT|MISS` și `X-Backend`;
+- invalidează cache-ul după `PUT` și `POST`.
+
+Pornirea demonstrației:
+
+```powershell
+python demo_web_proxy.py
+```
+
+Sau folosește `proxy.bat`. Apoi accesează:
+
+```text
+http://127.0.0.1:8080/employees?offset=0&limit=100
+http://127.0.0.1:8080/employee?id=1
+http://127.0.0.1:8080/employees?format=xml
+```
+
+PUT-ul poate fi testat cu PowerShell:
+
+```powershell
+Invoke-RestMethod -Method Put `
+  -Uri "http://127.0.0.1:8080/employees" `
+  -ContentType "application/json" `
+  -Body '{"id":3,"name":"Katherine Johnson","role":"Engineer"}'
+```
+
+### Conformitatea cu cerințele laboratorului Web Proxy
+
+Implementarea acoperă cerințele obligatorii din PDF-ul lucrării de laborator:
+
+#### Etapa 1 — Data Warehouse HTTP
+
+- **Nod informativ de tip Data Warehouse:** `WarehouseHTTPServer` expune
+  datele angajaților prin HTTP.
+- **Comunicare concurentă:** serverul folosește `ThreadingHTTPServer`, cu
+  model thread-per-request.
+- **GET pentru citirea datelor:** sunt disponibile `GET /employee?id=1` și
+  `GET /employees?offset=0&limit=100`.
+- **PUT pentru transmiterea datelor:** `PUT /employees` și
+  `PUT /employees/<id>` adaugă sau modifică angajați.
+- **POST pentru modificări:** `POST /update/employees` pune o modificare în
+  coada de pull.
+- **Pull request:** `GET /update/employees` extrage modificările din coadă.
+- **Formate JSON și XML:** formatul poate fi ales prin
+  `Accept: application/json`, `Accept: application/xml` sau parametrul
+  `?format=json|xml`.
+- **Date thread-safe:** `ThreadSafeWarehouse` protejează angajații și coada
+  de modificări cu `RLock`.
+- **Maparea cererilor pe operații:** `WarehouseRequestHandler` joacă rolul
+  componentei Controller pentru operațiile HTTP ale warehouse-ului.
+
+#### Etapa 2 — Reverse Proxy
+
+- **Reverse proxy obligatoriu:** clientul accesează proxy-ul, iar proxy-ul
+  transmite cererile către warehouse-uri și returnează răspunsurile.
+- **Smart proxy:** conexiunile HTTP către backend-uri sunt reutilizate prin
+  `ConnectionPool`, iar conexiunile clientului rămân persistente prin HTTP/1.1.
+- **Caching:** răspunsurile `GET` de succes sunt păstrate temporar cu TTL.
+- **Separarea variantelor de format:** răspunsurile JSON și XML au chei de
+  cache distincte.
+- **Invalidarea cache-ului:** operațiile `PUT`, `POST` și `DELETE` invalidează
+  intrările memorate.
+- **Load balancing:** `RoundRobinPool` distribuie cererile între mai multe
+  warehouse-uri folosind algoritmul Round-Robin.
+- **Mai multe noduri DW:** demonstrația pornește două warehouse-uri în
+  [demo_web_proxy.py](demo_web_proxy.py), accesibile printr-un singur proxy.
+
+Implementarea este verificată de testele din `test_web_proxy.py`, care acoperă
+concurența, JSON/XML, operațiile PUT/POST, pull updates, caching,
+invalidarea cache-ului, separarea formatelor și Round-Robin.
 
 
 În meniul manual poți alege mesaj normal, mesaj duplicat, crash după efect înainte de ACK, eroare cu retry și DLQ, ordering pentru trei mesaje, afișarea stării brokerului sau istoricul complet al evenimentelor din sesiune.
