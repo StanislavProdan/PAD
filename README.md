@@ -297,7 +297,7 @@ concurentă, contractul versionat și idempotency. XML, UDP multicast,
 persistența permanentă și integrarea dintre cele două trasee sunt documentate
 explicit ca funcționalități care nu fac parte din incrementurile actuale.
 
-## Incrementul Web Proxy: warehouse, cache și load balancing
+## Incrementul 3 Web Proxy: warehouse, cache și load balancing
 
 Incrementul HTTP este implementat în `web_proxy.py`. Data warehouse este
 expusă printr-un server `ThreadingHTTPServer`, deci fiecărei cereri îi
@@ -346,9 +346,8 @@ Invoke-RestMethod -Method Put `
   -Body '{"id":3,"name":"Katherine Johnson","role":"Engineer"}'
 ```
 
-### Conformitatea cu cerințele laboratorului Web Proxy
+### Conformitatea cu cerințele laboratorului Web Proxy.
 
-Implementarea acoperă cerințele obligatorii din PDF-ul lucrării de laborator:
 
 #### Etapa 1 — Data Warehouse HTTP
 
